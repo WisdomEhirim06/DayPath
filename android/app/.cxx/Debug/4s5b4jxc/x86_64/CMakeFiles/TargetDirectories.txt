@@ -1,0 +1,2 @@
+C:/Users/Wisdom/projects25/daypath/daypath/android/app/.cxx/Debug/4s5b4jxc/x86_64/CMakeFiles/edit_cache.dir
+C:/Users/Wisdom/projects25/daypath/daypath/android/app/.cxx/Debug/4s5b4jxc/x86_64/CMakeFiles/rebuild_cache.dir
