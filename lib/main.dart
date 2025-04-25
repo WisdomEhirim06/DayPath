@@ -48,6 +48,7 @@ class MyApp extends StatelessWidget {
         theme: DayPathTheme.getLightTheme(),
         darkTheme: DayPathTheme.getDarkTheme(),
         themeMode: ThemeMode.system,
+        debugShowCheckedModeBanner: false,
         home: isFirstLaunch ? const OnboardingScreen() : const HomeScreen(),
       ),
     );
