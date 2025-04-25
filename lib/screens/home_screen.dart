@@ -128,7 +128,7 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Image.asset(
-                      'assets/logo.png',
+                      'assets/dayPathImage.png',
                       width: 24,
                       height: 24,
                     ),
