@@ -1,4 +1,4 @@
-# daypath
+# Daypath
 
 A new Flutter project.
 
