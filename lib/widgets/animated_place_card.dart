@@ -9,8 +9,8 @@ class AnimatedPlaceCard extends StatefulWidget {
   const AnimatedPlaceCard({
     required this.place,
     required this.index,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
   
   @override
   State<AnimatedPlaceCard> createState() => _AnimatedPlaceCardState();

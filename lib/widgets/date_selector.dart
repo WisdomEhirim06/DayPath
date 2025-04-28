@@ -13,8 +13,8 @@ class AnimatedDateSelector extends StatefulWidget {
     required this.onPreviousDay,
     required this.onNextDay,
     required this.canSelectNextDay,
-    Key? key,
-  }) : super(key: key);
+    super.key,
+  });
 
   @override
   State<AnimatedDateSelector> createState() => _AnimatedDateSelectorState();

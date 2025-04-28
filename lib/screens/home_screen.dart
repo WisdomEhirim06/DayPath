@@ -129,8 +129,8 @@ class _HomeScreenState extends State<HomeScreen> with SingleTickerProviderStateM
                   children: [
                     Image.asset(
                       'assets/dayPathImage.png',
-                      width: 24,
-                      height: 24,
+                      width: 35,
+                      height: 35,
                     ),
                     const SizedBox(width: 8),
                     Text(

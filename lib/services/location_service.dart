@@ -1,5 +1,5 @@
 import 'dart:async';
-//import 'dart:math';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:geocoding/geocoding.dart';
@@ -16,34 +16,40 @@ class LocationService extends ChangeNotifier {
   FlutterLocalNotificationsPlugin? _notifications;
   final bool _notificationsEnabled = true;
 
-  
   // Tracking Store
   bool _isTracking = false;
-  // ignore: unused_field
   Position? _lastPosition;
   final List<Position> _positionBuffer = [];
 
   // Current visit tracking
   VisitedPlace? _currentVisit;
   Timer? _dwellTimer;
+  DateTime? _potentialVisitStartTime;
+  
+  // Visited places memory
+  final Map<String, VisitedPlace> _recentlyVisitedPlaces = {};
 
-  // Configuration
-  static const double _proximityThreshold = 100.0; // meters
-  static const int _dwellTimeThreshold = 4; // minutes
-  static const int _minSamples = 3; // minimum samples to consider a location
+  // Configuration - Improved parameters
+  static const double _proximityThreshold = 200.0; // meters, increased from 100m
+  static const int _dwellTimeThreshold = 10; // minutes, increased from 4 min
+  static const int _minSamples = 5; // minimum samples, increased from 3
+  static const double _accuracyThreshold = 50.0; // meters, filter poor GPS readings
+  static const int _significantVisitMinDuration = 5; // minutes, for filtering short visits
+  static const int _maxPositionBufferSize = 20; // Store more positions for better analysis
+  static const double _mergeVisitDistance = 300.0; // meters, for merging nearby locations
 
-  // Location accuracy and interval
+  // Location accuracy and interval - Adjusted for better battery life
   final LocationSettings _locationSettings = AndroidSettings(
     accuracy: LocationAccuracy.high,
-    distanceFilter: 10,
+    distanceFilter: 20, // Increased from 10m to reduce unnecessary updates
     forceLocationManager: true,
-    intervalDuration: const Duration(seconds: 10),
+    intervalDuration: const Duration(seconds: 30), // Increased from 10s to reduce battery usage
     foregroundNotificationConfig: const ForegroundNotificationConfig(
       notificationText: 'Tracking your daily places',
       notificationTitle: 'DayPath is active',
       enableWakeLock: true,
-    ), // ForegroundNotification Settings
-  ); //Android settings
+    ),
+  );
 
   // Public Getters
   bool get isTracking => _isTracking;
@@ -54,7 +60,7 @@ class LocationService extends ChangeNotifier {
     _initializeNotifications();
   }
 
-  // Initialize notifications for forground service
+  // Initialize notifications for foreground service
   Future<void> _initializeNotifications() async {
     _notifications = FlutterLocalNotificationsPlugin();
 
@@ -72,17 +78,15 @@ class LocationService extends ChangeNotifier {
 
   // Request location permission
   Future<bool> requestLocationPermission() async {
+    // Method unchanged - permission handling works well
     bool serviceEnabled;
     LocationPermission permission;
 
-    // Check if location services are enabled
     serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      // Request the user to enable location services
       return false;
     }
 
-    // Check for location permission
     permission = await Geolocator.checkPermission();
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
@@ -92,11 +96,9 @@ class LocationService extends ChangeNotifier {
     }
 
     if (permission == LocationPermission.deniedForever) {
-      // User denied location Permission permanently
       return false;
     }
 
-    // Request background permission on Android
     if (defaultTargetPlatform == TargetPlatform.android) {
       final status = await Permission.locationAlways.status;
       if (status.isDenied) {
@@ -117,7 +119,7 @@ class LocationService extends ChangeNotifier {
       throw Exception('Location permission denied');
     }
 
-    // Start listening to positon stream
+    // Start listening to position stream
     _positionStreamSubscription = Geolocator.getPositionStream(
       locationSettings: _locationSettings,
     ).listen(_onPositionUpdate);
@@ -139,16 +141,14 @@ class LocationService extends ChangeNotifier {
       await _finalizeCurrentVisit();
     }
 
-    // Cancel the positon Stream Subscription
     await _positionStreamSubscription?.cancel();
     _positionStreamSubscription = null;
 
-    // Cancel any active dwell timer
     _dwellTimer?.cancel();
     _dwellTimer = null;
 
-    // Reset position Buffer
     _positionBuffer.clear();
+    _potentialVisitStartTime = null;
 
     _isTracking = false;
     notifyListeners();
@@ -158,117 +158,258 @@ class LocationService extends ChangeNotifier {
     }
   }
 
-  // Handle new position updates
+  // Handle new position updates with improved filtering
   void _onPositionUpdate(Position position) {
+    // Filter out inaccurate readings
+    if (position.accuracy > _accuracyThreshold) {
+      debugPrint('Skipping inaccurate position: ${position.accuracy}m');
+      return;
+    }
+
     _lastPosition = position;
     _positionBuffer.add(position);
 
-    // Keep the buffer from growing too large
-    if (_positionBuffer.length > 10) {
+    // Keep buffer size manageable but sufficient for analysis
+    if (_positionBuffer.length > _maxPositionBufferSize) {
       _positionBuffer.removeAt(0);
     }
 
-    // if not currently tracking a visit, check if to start one
+    // If not currently tracking a visit, check if to start one
     if (_currentVisit == null) {
       _checkForNewVisit();
     } else {
       _checkIfUserLeftVisit(position);
     }
+    
     notifyListeners();
   }
 
-  // Check if user has stayed in the same approximate location
+  // Improved stationary detection with cluster analysis
   void _checkForNewVisit() {
-    // Need enough samples to determine if stationary
+    // Need enough samples
     if (_positionBuffer.length < _minSamples) return;
 
-    // Check if the last few positions are within proximity threshold
-    final recentPositions = _positionBuffer.sublist(_positionBuffer.length - _minSamples);
-    final isStationary = _arePositionsWithinProximity(recentPositions, _proximityThreshold);
+    // Get the most recent positions for analysis
+    final recentPositions = _positionBuffer.sublist(
+        _positionBuffer.length - min(_minSamples, _positionBuffer.length));
+    
+    // Calculate the centroid of recent positions
+    final centroid = _calculateCentroid(recentPositions);
+    
+    // Check if positions form a cluster (are stationary)
+    final isStationary = _isClusterStationary(recentPositions, centroid);
 
-    // If user appears to be stationary, start a dwell timer
-    if (isStationary && _dwellTimer == null) {
-      _dwellTimer = Timer(Duration(minutes: _dwellTimeThreshold), () async {
-        // After dwell time expires, create a new visit
-        await _startNewVisit(recentPositions.last);
-        _dwellTimer = null;
-      });
-    } else if (!isStationary && _dwellTimer != null) {
-      // If user moved, cancel dwell timer
+    // Stationary detection with better timing logic
+    if (isStationary) {
+      // If we just detected potential visit, record the start time
+      if (_potentialVisitStartTime == null) {
+        _potentialVisitStartTime = DateTime.now();
+        debugPrint('Potential visit detected, monitoring dwell time...');
+      }
+      
+      // Check if we've stayed long enough to consider it a visit
+      final dwellTimeSoFar = DateTime.now().difference(_potentialVisitStartTime!).inMinutes;
+      
+      if (dwellTimeSoFar >= _dwellTimeThreshold && _dwellTimer == null) {
+        // Start dwell timer to confirm this is a significant place
+        _dwellTimer = Timer(const Duration(minutes: 1), () async {
+          // Verify we're still stationary after timer ends
+          if (_positionBuffer.isNotEmpty) {
+            final currentCentroid = _calculateCentroid(_positionBuffer.sublist(
+                _positionBuffer.length - min(_minSamples, _positionBuffer.length)));
+                
+            // Only start a visit if we're near the same location
+            if (_calculateDistance(centroid, currentCentroid) < _proximityThreshold / 2) {
+              await _startNewVisit(recentPositions.last, _potentialVisitStartTime!);
+            }
+          }
+          _dwellTimer = null;
+        });
+      }
+    } else {
+      // Reset potential visit if we've moved
+      _potentialVisitStartTime = null;
       _dwellTimer?.cancel();
       _dwellTimer = null;
     }
   }
 
-  // Check if all positions are within a certain distance of each other
-  bool _arePositionsWithinProximity(List<Position> positions, double thresholdMeters) {
-    if (positions.length < 2) return true;
+  // Calculate centroid from a list of positions
+  Map<String, double> _calculateCentroid(List<Position> positions) {
+    double sumLat = 0;
+    double sumLng = 0;
     
-    // Check all position pairs
-    for (int i = 0; i < positions.length; i++) {
-      for (int j = i + 1; j < positions.length; j++) {
-        final distance = Geolocator.distanceBetween(
-          positions[i].latitude,
-          positions[i].longitude,
-          positions[j].latitude,
-          positions[j].longitude,
-        );
-        
-        if (distance > thresholdMeters) {
-          return false;
-        }
-      }
+    for (final position in positions) {
+      sumLat += position.latitude;
+      sumLng += position.longitude;
     }
     
-    return true;
+    return {
+      'latitude': sumLat / positions.length,
+      'longitude': sumLng / positions.length
+    };
   }
 
-  // Start tracking a new visit at the current location
-  Future<void> _startNewVisit(Position position) async {
-    // Get place name for the current position
-    final placeName = await _getPlaceNameFromPosition(position);
+  // Determine if a cluster of points is stationary using standard deviation
+  bool _isClusterStationary(List<Position> positions, Map<String, double> centroid) {
+    double totalDistance = 0;
+    final distances = <double>[];
     
-    // Create a new visited place
-    final now = DateTime.now();
-    final id = const Uuid().v4();
+    // Calculate distance of each point to centroid
+    for (final position in positions) {
+      final distance = Geolocator.distanceBetween(
+        position.latitude,
+        position.longitude,
+        centroid['latitude']!,
+        centroid['longitude']!,
+      );
+      
+      distances.add(distance);
+      totalDistance += distance;
+    }
     
-    _currentVisit = VisitedPlace.fromLatLng(
-      id: id,
-      latitude: position.latitude,
-      longitude: position.longitude,
-      placeName: placeName,
-      startTime: now,
-      endTime: now, // Will be updated when the visit ends
+    // Calculate mean distance and standard deviation
+    final meanDistance = totalDistance / positions.length;
+    
+    double sumSquaredDiff = 0;
+    for (final distance in distances) {
+      sumSquaredDiff += pow(distance - meanDistance, 2);
+    }
+    
+    final stdDev = sqrt(sumSquaredDiff / positions.length);
+    
+    // Consider stationary if standard deviation and mean are both below thresholds
+    return stdDev < (_proximityThreshold / 4) && meanDistance < (_proximityThreshold / 2);
+  }
+
+  // Calculate distance between two centroids
+  double _calculateDistance(Map<String, double> point1, Map<String, double> point2) {
+    return Geolocator.distanceBetween(
+      point1['latitude']!,
+      point1['longitude']!,
+      point2['latitude']!,
+      point2['longitude']!,
     );
+  }
+
+  // Improved visit starting that considers visit history
+  Future<void> _startNewVisit(Position position, DateTime actualStartTime) async {
+    // Enhanced place name retrieval
+    final placeName = await _getEnhancedPlaceNameFromPosition(position);
     
-    // Save the initial visit to storage
+    // Check if this location is near a recently visited place
+    final String? existingPlaceId = _findNearbyVisitedPlace(position);
+    
+    if (existingPlaceId != null) {
+      // This is a return to a previously visited place
+      debugPrint('Returned to previously visited place: $placeName');
+      final existingPlace = _recentlyVisitedPlaces[existingPlaceId]!;
+      
+      _currentVisit = existingPlace.copyWith(
+        startTime: actualStartTime,
+        endTime: DateTime.now(),
+      );
+    } else {
+      // This is a new place
+      final now = DateTime.now();
+      final id = const Uuid().v4();
+      
+      _currentVisit = VisitedPlace.fromLatLng(
+        id: id,
+        latitude: position.latitude,
+        longitude: position.longitude,
+        placeName: placeName,
+        startTime: actualStartTime, // Use the actual time we became stationary
+        endTime: now,
+      );
+      
+      // Add to recently visited places for future reference
+      _recentlyVisitedPlaces[id] = _currentVisit!;
+    }
+    
+    // Cap the memory of recent places
+    if (_recentlyVisitedPlaces.length > 20) {
+      final oldestKey = _recentlyVisitedPlaces.keys.first;
+      _recentlyVisitedPlaces.remove(oldestKey);
+    }
+    
+    // Save the visit to storage
     await _storageService.saveVisitedPlace(_currentVisit!);
+    
+    // Reset potential visit tracking
+    _potentialVisitStartTime = null;
     
     notifyListeners();
   }
 
-  // Check if user has moved away from the current visit location
+  // Find if current position is near a recently visited place
+  String? _findNearbyVisitedPlace(Position position) {
+    for (final entry in _recentlyVisitedPlaces.entries) {
+      final place = entry.value;
+      final distance = Geolocator.distanceBetween(
+        place.latitude,
+        place.longitude,
+        position.latitude,
+        position.longitude,
+      );
+      
+      if (distance < _mergeVisitDistance) {
+        return entry.key;
+      }
+    }
+    return null;
+  }
+
+  // Improved check for leaving a visit with better movement detection
   void _checkIfUserLeftVisit(Position currentPosition) async {
     if (_currentVisit == null) return;
     
-    // Calculate distance from current visit location
-    final distance = Geolocator.distanceBetween(
-      _currentVisit!.latitude,
-      _currentVisit!.longitude,
-      currentPosition.latitude,
-      currentPosition.longitude,
-    );
+    // We need more than just one position to confirm movement
+    if (_positionBuffer.length < 3) {
+      await _updateCurrentVisitEndTime();
+      return;
+    }
     
-    // If user has moved away, finalize the visit
-    if (distance > _proximityThreshold) {
-      _finalizeCurrentVisit();
+    // Get the most recent positions
+    final recentPositions = _positionBuffer.sublist(_positionBuffer.length - 3);
+    
+    // Check if all recent positions are outside the visit radius
+    bool hasDefinitelyLeft = true;
+    for (final pos in recentPositions) {
+      final distance = Geolocator.distanceBetween(
+        _currentVisit!.latitude,
+        _currentVisit!.longitude,
+        pos.latitude,
+        pos.longitude,
+      );
+      
+      if (distance <= _proximityThreshold) {
+        hasDefinitelyLeft = false;
+        break;
+      }
+    }
+    
+    if (hasDefinitelyLeft) {
+      // Filter out extremely short visits
+      final visitDuration = _currentVisit!.endTime.difference(_currentVisit!.startTime).inMinutes;
+      
+      if (visitDuration < _significantVisitMinDuration) {
+        debugPrint('Discarding short visit (${visitDuration}m): ${_currentVisit!.placeName}');
+        await _storageService.deleteVisitedPlace(_currentVisit!.id);
+        _recentlyVisitedPlaces.remove(_currentVisit!.id);
+      } else {
+        await _finalizeCurrentVisit();
+      }
+      
+      _currentVisit = null;
+      _potentialVisitStartTime = null;
     } else {
-      // Update visit end time as long as user stays at the location
+      // Still at this location, update the end time
       await _updateCurrentVisitEndTime();
     }
   }
 
-  // Update the end time of the current visit
+  // Update current visit end time
   Future<void> _updateCurrentVisitEndTime() async {
     if (_currentVisit == null) return;
     
@@ -276,27 +417,15 @@ class LocationService extends ChangeNotifier {
     final updatedVisit = _currentVisit!.copyWith(endTime: now);
     _currentVisit = updatedVisit;
     
-    // Update the visit in storage
+    // Update in memory cache and storage
+    _recentlyVisitedPlaces[_currentVisit!.id] = _currentVisit!;
     await _storageService.updateVisitedPlace(updatedVisit);
     
     notifyListeners();
   }
 
-  // Finalize the current visit
-  Future<void> _finalizeCurrentVisit() async {
-    if (_currentVisit == null) return;
-    
-    // Update the end time one last time
-    await _updateCurrentVisitEndTime();
-    
-    // Clear current visit
-    _currentVisit = null;
-    
-    notifyListeners();
-  }
-
-  // Get human-readable place name from coordinates
-  Future<String> _getPlaceNameFromPosition(Position position) async {
+  // Enhanced place name resolution
+  Future<String> _getEnhancedPlaceNameFromPosition(Position position) async {
     try {
       final placemarks = await placemarkFromCoordinates(
         position.latitude,
@@ -306,22 +435,42 @@ class LocationService extends ChangeNotifier {
       if (placemarks.isNotEmpty) {
         final place = placemarks.first;
         
-        // Construct readable place name from components
+        // Try to create a more meaningful and hierarchical place name
+        // First check for point of interest
+        if (place.name != null && place.name!.isNotEmpty && 
+            place.name != place.street && 
+            !place.name!.contains(RegExp(r'^\d+'))) {
+          // Likely a named building or POI
+          return place.name!;
+        }
+        
+        // Next, try street address
         final components = <String>[];
         
-        if (place.name != null && place.name!.isNotEmpty && place.name != place.street) {
-          components.add(place.name!);
-        }
-        
         if (place.street != null && place.street!.isNotEmpty) {
-          components.add(place.street!);
+          // Format house number + street name nicely
+          if (place.subThoroughfare != null && place.subThoroughfare!.isNotEmpty) {
+            components.add('${place.subThoroughfare} ${place.street}');
+          } else {
+            components.add(place.street!);
+          }
+          
+          // Add neighborhood or district if available
+          if (place.subLocality != null && place.subLocality!.isNotEmpty) {
+            components.add(place.subLocality!);
+          }
+          
+          return components.join(', ');
         }
         
-        if (components.isEmpty && place.locality != null && place.locality!.isNotEmpty) {
-          components.add(place.locality!);
+        // Fallback to area name
+        if (place.locality != null && place.locality!.isNotEmpty) {
+          if (place.subLocality != null && place.subLocality!.isNotEmpty &&
+              place.subLocality != place.locality) {
+            return '${place.subLocality}, ${place.locality}';
+          }
+          return place.locality!;
         }
-        
-        return components.join(', ');
       }
     } catch (e) {
       debugPrint('Error getting place name: $e');
@@ -331,7 +480,22 @@ class LocationService extends ChangeNotifier {
     return 'Unknown location';
   }
 
-  // Show an ongoing notification while tracking
+  // Finalize the current visit
+  Future<void> _finalizeCurrentVisit() async {
+    if (_currentVisit == null) return;
+    
+    // Update the end time one last time
+    await _updateCurrentVisitEndTime();
+    
+    debugPrint('Visit finalized: ${_currentVisit!.placeName} (${_currentVisit!.endTime.difference(_currentVisit!.startTime).inMinutes}m)');
+    
+    // Clear current visit
+    _currentVisit = null;
+    
+    notifyListeners();
+  }
+
+  // Show ongoing notification - unchanged
   Future<void> _showOngoingNotification() async {
     if (_notifications == null) return;
     

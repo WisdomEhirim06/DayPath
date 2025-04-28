@@ -3,7 +3,7 @@ import 'package:daypath/screens/home_screen.dart';
 import 'package:daypath/themes/theme.dart';
 
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({Key? key}) : super(key: key);
+  const SplashScreen({super.key});
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -20,7 +20,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     // Initialize the animation controller
     _animationController = AnimationController(
       vsync: this,
-      duration: const Duration(seconds: 3), // Fade-in duration
+      duration: const Duration(seconds: 5), // Fade-in duration
     );
 
     // Define the fade-in animation
@@ -33,7 +33,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
     _animationController.forward();
 
      // Navigate to the onboarding screen after 3 seconds
-    Future.delayed(const Duration(seconds: 3), () {
+    Future.delayed(const Duration(seconds: 5), () {
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (context) => const OnboardingScreen()),
       );
@@ -63,7 +63,7 @@ class _SplashScreenState extends State<SplashScreen> with SingleTickerProviderSt
   }
 }
 class OnboardingScreen extends StatefulWidget {
-  const OnboardingScreen({Key? key}) : super(key: key);
+  const OnboardingScreen({super.key});
   
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();

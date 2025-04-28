@@ -8,11 +8,11 @@ class SummaryCard extends StatelessWidget {
   final VisitedPlace? mostVisitedPlace;
 
   const SummaryCard({
-    Key? key,
+    super.key,
     required this.placesCount,
     required this.totalDuration,
     this.mostVisitedPlace,
-  }) : super(key: key);
+  });
 
   @override
   Widget build(BuildContext context) {
